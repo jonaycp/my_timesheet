@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, date
 
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
-st.title("🗂️ Roster Extractor (choose month)")
+st.title("🗂️ Majda workdays")
 st.caption("Upload the Excel, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
 
 # ----------------------------- Sidebar -----------------------------
