@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, date
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
 st.title("🗂️ Roster Extractor (choose month)")
-st.caption("Upload the Excel, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month, view the whole month by default, or jump to **This week** / **Next week**.")
+st.caption("Upload the Excel, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
 
 # ----------------------------- Sidebar -----------------------------
 with st.sidebar:
@@ -124,10 +124,12 @@ if uploaded:
         if matches.empty:
             st.warning("No matches found in the selected file for that name.")
         else:
-            # Build available months from data and let the user pick (descending list)
+            # Build available months (descending) and default to CURRENT month if present
             matches["YearMonth"] = matches["Date"].dt.to_period("M").astype(str)
             months = sorted(matches["YearMonth"].dropna().unique(), reverse=True)
-            chosen = st.selectbox("Month", options=months, index=0, help="Newest first")
+            current_ym = pd.Timestamp.today().to_period("M").astype(str)
+            default_index = months.index(current_ym) if current_ym in months else 0
+            chosen = st.selectbox("Month", options=months, index=default_index, help="Newest first (defaults to current month if available)")
 
             # Filter to chosen month and sort ASCENDING by date (day 1 → 31)
             view = matches[matches["YearMonth"] == chosen].copy()
@@ -189,6 +191,6 @@ st.markdown("""
 ---
 ### Notes
 - The app automatically reads the **Směny** sheet (fallback to the first sheet if missing).
-- Pick the **month** (listed from newest to oldest).
+- Month list is newest → oldest and **defaults to current month** when available.
 - Default view shows **all month** (ascending by day). Use **This week** or **Next week** to focus on a single week.
 """)
