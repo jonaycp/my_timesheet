@@ -1,24 +1,14 @@
-# Extractor de turnos por persona (Streamlit)
+# Roster Extractor (last month only)
 
-App web móvil: sube un Excel mensual y extrae todas las celdas que contienen un nombre (por defecto, Magda), generando una tabla detallada y un resumen por mes/lugar.
+Mobile-friendly Streamlit app. Upload a monthly Excel and extract all cells containing a given name (default: Magda). It shows **only the latest month in the file**, ordered by day, grouped by **weeks**, and provides a clean, friendly view. No month/place pivot is generated.
 
-## Despliegue sin VPS
+## Deploy (no VPS required)
 
-### Opción 1: Streamlit Community Cloud
-1. Crea un repositorio en GitHub con `app.py` y `requirements.txt`.
-2. En Streamlit Community Cloud, crea una app apuntando a `app.py`.
-3. Obtendrás una URL pública para compartir (funciona en móvil).
+### Streamlit Community Cloud
+1. Create a GitHub repo with `app.py` and `requirements.txt`.
+2. In Streamlit Cloud, create an app pointing to `app.py`.
+3. Share the public URL (it works nicely on mobile).
 
-### Opción 2: Hugging Face Spaces
-1. Crea un Space (tipo Streamlit).
-2. Sube `app.py` y `requirements.txt`.
-3. Obtendrás una URL pública (funciona en móvil).
-
-## Ejecutar en local (opcional)
-```
-python -m venv .venv
-source .venv/bin/activate   # En Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
+### Hugging Face Spaces (Streamlit)
+1. Create a new Space (type Streamlit).
+2. Upload `app.py` and `requirements.txt`.
