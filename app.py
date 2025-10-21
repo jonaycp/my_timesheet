@@ -127,7 +127,8 @@ if uploaded:
             # Build available months (descending) and default to CURRENT month if present
             matches["YearMonth"] = matches["Date"].dt.to_period("M").astype(str)
             months = sorted(matches["YearMonth"].dropna().unique(), reverse=True)
-            current_ym = pd.Timestamp.today().to_period("M").astype(str)
+            # FIX: use str() on the Period object instead of .astype(str)
+            current_ym = str(pd.Timestamp.today().to_period("M"))
             default_index = months.index(current_ym) if current_ym in months else 0
             chosen = st.selectbox("Month", options=months, index=default_index, help="Newest first (defaults to current month if available)")
 

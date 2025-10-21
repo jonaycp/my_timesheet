@@ -1,6 +1,5 @@
-# Roster Extractor (Směny + month select + week jump, default to current month)
+# Roster Extractor (fix Period -> str)
 
+- Fixes: `'Period' object has no attribute 'astype'` by using `str(period)`.
 - Automatically reads the **Směny** sheet (fallback: first sheet).
-- Month selector lists newest → oldest and **defaults to current month** if found in the data.
-- Days render **ascending** (1 → 31). Buttons: **This week**, **Next week**, **All month** (default).
-- Weekly card-style view + month Excel download.
+- Month selector defaults to current month if present; days ascending; week jump buttons included.
