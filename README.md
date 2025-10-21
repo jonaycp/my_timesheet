@@ -1,6 +1,6 @@
-# Roster Extractor (choose month, Směny sheet)
+# Roster Extractor (Směny + month select + week jump)
 
 - Automatically reads the **Směny** sheet (fallback: first sheet).
-- Lets you **select the month** (descending order).
-- Weekly, card-style view sorted from **newest to oldest**.
-- Download the filtered month as an Excel file.
+- Select the **month** from a descending list, but days render **ascending** (1 → 31).
+- Buttons to focus: **This week**, **Next week**, or **All month** (default).
+- Weekly card-style view + month Excel download.

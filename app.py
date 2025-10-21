@@ -1,13 +1,14 @@
 import io
 import pandas as pd
 import streamlit as st
-from datetime import timedelta
+from datetime import datetime, timedelta, date
 
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
 st.title("🗂️ Roster Extractor (choose month)")
-st.caption("Upload the Excel, type a name (default: Magda). The app will read the **Směny** sheet automatically and let you pick the month to display, newest first.")
+st.caption("Upload the Excel, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month, view the whole month by default, or jump to **This week** / **Next week**.")
 
+# ----------------------------- Sidebar -----------------------------
 with st.sidebar:
     st.header("⚙️ Options")
     target_name = st.text_input("Name to search", value="Magda").strip()
@@ -15,6 +16,7 @@ with st.sidebar:
 
 uploaded = st.file_uploader("Drop or select the .xlsx file", type=["xlsx"])
 
+# ----------------------------- Helpers -----------------------------
 def _safe_to_datetime(s):
     return pd.to_datetime(s, errors="coerce")
 
@@ -50,23 +52,29 @@ def _extract_matches(df, name):
                 })
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["Date","Weekday","Place","Shift","CellText"])
 
-def _week_start(d):
+def _week_start(d: date):
     # Monday as start of week
     if pd.isna(d):
         return d
     return d - timedelta(days=d.weekday())
 
-def _human_week_label(start_date):
+def _human_week_label(start_date: date):
     end_date = start_date + timedelta(days=6)
     return f"{start_date:%b %d} – {end_date:%b %d}"
 
-def render_weekly_view(df):
-    # Descending order by week then date (newest first)
-    df = df.copy()
-    df["WeekStart"] = df["Date"].apply(_week_start)
-    df.sort_values(["WeekStart", "Date", "Place", "Shift"], ascending=[False, False, True, True], inplace=True)
+def _filter_by_week(df, week_start: date):
+    week_end = week_start + timedelta(days=6)
+    m = (df["Date"].dt.date >= week_start) & (df["Date"].dt.date <= week_end)
+    return df[m].copy()
 
-    # Summary header
+def render_weekly_view(df, focus_week: date | None = None):
+    # Prepare week buckets
+    df = df.copy()
+    df["WeekStart"] = df["Date"].dt.date.apply(_week_start)
+    # Ascending: weeks from earliest to latest; days from earliest to latest
+    df.sort_values(["WeekStart", "Date", "Place", "Shift"], ascending=[True, True, True, True], inplace=True)
+
+    # Overview
     total_days = df["Date"].dt.normalize().nunique()
     total_entries = len(df)
     unique_places = df["Place"].nunique()
@@ -80,13 +88,18 @@ def render_weekly_view(df):
     with c3:
         st.metric("Places this month", int(unique_places))
 
-    # Render per week (newest first)
+    # If focusing on a single week, filter here (keeps ordering)
+    if focus_week is not None:
+        df = _filter_by_week(df, focus_week)
+        df["WeekStart"] = df["Date"].dt.date.apply(_week_start)
+
+    # Render per week (ascending)
     for wk, dfw in df.groupby("WeekStart", sort=False):
         st.markdown("---")
         st.subheader(f"Week of {_human_week_label(wk)}")
 
-        # Group per calendar day (newest first within the week)
-        for day, dfd in dfw.groupby(dfw["Date"].dt.date, sort=False):
+        # Group per calendar day (ascending)
+        for day, dfd in dfw.groupby(dfw["Date"].dt.date, sort=True):
             st.markdown(f"##### {pd.to_datetime(day):%A, %b %d}")
             for _, row in dfd.iterrows():
                 st.markdown(f"""
@@ -97,6 +110,7 @@ def render_weekly_view(df):
 </div>
 """, unsafe_allow_html=True)
 
+# ----------------------------- Main Flow -----------------------------
 if uploaded:
     try:
         # Always load the 'Směny' sheet. If it doesn't exist, fallback to the first sheet.
@@ -110,25 +124,57 @@ if uploaded:
         if matches.empty:
             st.warning("No matches found in the selected file for that name.")
         else:
-            # Build available months from data and let the user pick (descending)
+            # Build available months from data and let the user pick (descending list)
             matches["YearMonth"] = matches["Date"].dt.to_period("M").astype(str)
             months = sorted(matches["YearMonth"].dropna().unique(), reverse=True)
-            default_index = 0  # newest first
-            chosen = st.selectbox("Month to display", options=months, index=default_index)
+            chosen = st.selectbox("Month", options=months, index=0, help="Newest first")
 
-            # Filter to chosen month and sort descending by date for rendering
+            # Filter to chosen month and sort ASCENDING by date (day 1 → 31)
             view = matches[matches["YearMonth"] == chosen].copy()
             view.drop(columns=["YearMonth"], inplace=True)
+            view.sort_values(["Date", "Place", "Shift"], ascending=[True, True, True], inplace=True)
+
             if view.empty:
                 st.info("No entries for the selected month.")
             else:
-                # Render weekly cards (descending)
-                render_weekly_view(view)
+                # Week jump controls
+                st.markdown("### Quick jump")
+                colA, colB, colC = st.columns(3)
+                today = date.today()
+                this_week_start = today - timedelta(days=today.weekday())
+                next_week_start = this_week_start + timedelta(days=7)
 
-                # Download of this month's assignments only
+                # Session state for focus
+                if "focus_mode" not in st.session_state:
+                    st.session_state["focus_mode"] = "all"  # 'all' | 'this' | 'next'
+
+                def set_focus(mode):
+                    st.session_state["focus_mode"] = mode
+
+                with colA:
+                    if st.button("📅 This week"):
+                        set_focus("this")
+                with colB:
+                    if st.button("➡️ Next week"):
+                        set_focus("next")
+                with colC:
+                    if st.button("📆 All month"):
+                        set_focus("all")
+
+                # Determine focus_week based on current selection
+                focus_week = None
+                if st.session_state["focus_mode"] == "this":
+                    focus_week = this_week_start
+                elif st.session_state["focus_mode"] == "next":
+                    focus_week = next_week_start
+
+                # Render
+                render_weekly_view(view, focus_week=focus_week)
+
+                # Download of this month's assignments (ascending)
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                    view.sort_values(["Date","Place","Shift"], ascending=[False, True, True]).to_excel(writer, index=False, sheet_name="Assignments")
+                    view.to_excel(writer, index=False, sheet_name="Assignments")
                 st.download_button(
                     label=f"⬇️ Download Excel ({chosen})",
                     data=buffer.getvalue(),
@@ -143,6 +189,6 @@ st.markdown("""
 ---
 ### Notes
 - The app automatically reads the **Směny** sheet (fallback to the first sheet if missing).
-- Pick the **month** you want (months are listed from newest to oldest).
-- The view is sorted **newest to oldest**, grouped into **weeks** for clarity.
+- Pick the **month** (listed from newest to oldest).
+- Default view shows **all month** (ascending by day). Use **This week** or **Next week** to focus on a single week.
 """)
