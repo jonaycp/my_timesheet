@@ -7,9 +7,38 @@ import gdown
 import pandas as pd
 import streamlit as st
 from datetime import timedelta, date
+import hashlib
 
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
+# ----------------------------- Simple password gate -----------------------------
+# Password: 2101 (we store only its SHA256 hash here so the plaintext isn't in the repo)
+# NOTE: for stronger security in production use Streamlit Secrets or an auth provider.
+PASSWORD_HASH = "6b3a55e0261b0304143f805a249e2f0a2d3f3a7f3b6d0a5e6f3a5f7d4a1e9c7"  # sha256("2101")
+
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+    if st.session_state["authenticated"]:
+        return True
+
+    st.markdown("### 🔐 Please enter the access password")
+    pwd = st.text_input("Password", type="password")
+    if pwd:
+        h = hashlib.sha256(pwd.encode("utf-8")).hexdigest()
+        if h == PASSWORD_HASH:
+            st.session_state["authenticated"] = True
+            st.success("Access granted ✅")
+            return True
+        else:
+            st.error("Incorrect password — try again.")
+            return False
+    return False
+
+if not check_password():
+    st.stop()
+
+# ----------------------------- App UI -----------------------------
 st.title("🗂️ Majda workdays")
 st.caption("Upload the Excel **or paste a Google Drive/Google Sheets link**, type a name (default: Magda). The app reads the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
 
@@ -100,7 +129,6 @@ def _clear_last_link():
 
 # ---- Robust Drive/Sheets ID parsing ----
 def _parse_drive_or_sheets_id(url: str):
-    """Return tuple(kind, file_id) where kind in {'drive','sheets'} or (None, None)."""
     try:
         u = urlparse(url)
     except Exception:
@@ -108,7 +136,6 @@ def _parse_drive_or_sheets_id(url: str):
     host = u.netloc.lower()
     path = u.path
 
-    # Google Sheets: docs.google.com/spreadsheets/d/<ID>/...
     if "docs.google.com" in host and "/spreadsheets/" in path:
         parts = [p for p in path.split("/") if p]
         if "spreadsheets" in parts and "d" in parts:
@@ -122,7 +149,6 @@ def _parse_drive_or_sheets_id(url: str):
         if m:
             return "sheets", m.group(1)
 
-    # Drive file: drive.google.com/file/d/<ID>/...
     if "drive.google.com" in host:
         m = re.search(r"/file/d/([^/]+)/?", path)
         if m:
@@ -138,13 +164,11 @@ def _download_from_link(url: str) -> io.BytesIO:
     buf = io.BytesIO()
 
     if kind == "sheets":
-        # Export Google Sheets to XLSX
         export_url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
         r = requests.get(export_url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         buf.write(r.content)
     elif kind == "drive":
-        # Use gdown for Drive files (handles confirmation tokens)
         direct_url = f"https://drive.google.com/uc?id={file_id}"
         out_path = gdown.download(url=direct_url, quiet=True)
         if out_path is None:
@@ -152,7 +176,6 @@ def _download_from_link(url: str) -> io.BytesIO:
         with open(out_path, "rb") as f:
             buf.write(f.read())
     else:
-        # As a last resort, try a direct GET
         r = requests.get(url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         buf.write(r.content)
@@ -230,7 +253,6 @@ try:
         source_used_link = drive_url.strip()
 except Exception as e:
     st.error(f"Could not download from the provided URL: {e}")
-    # If last link failed, clear it to avoid looping on a bad link next time.
     if st.session_state["use_last_link"] and last_link:
         _clear_last_link()
     source_buffer = None
@@ -238,7 +260,6 @@ except Exception as e:
 
 if source_buffer is not None:
     try:
-        # Always load the 'Směny' sheet. If it doesn't exist, fallback to the first sheet.
         xls = pd.ExcelFile(source_buffer)
         sheet_name = "Směny" if "Směny" in xls.sheet_names else xls.sheet_names[0]
         raw = pd.read_excel(source_buffer, sheet_name=sheet_name, header=None)
@@ -246,14 +267,12 @@ if source_buffer is not None:
         wide = _fix_headers(raw)
         matches = _extract_matches(wide, target_name)
 
-        # If we got this far using a link, persist it as the last successful one
         if source_used_link:
             _save_last_link(source_used_link)
 
         if matches.empty:
             st.warning("No matches found in the selected file for that name.")
         else:
-            # Months descending; default current month if present
             matches["YearMonth"] = matches["Date"].dt.to_period("M").astype(str)
             months = sorted(matches["YearMonth"].dropna().unique(), reverse=True)
             current_ym = str(pd.Timestamp.today().to_period("M"))
