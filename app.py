@@ -11,8 +11,8 @@ import hashlib
 
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
-# ----------------------------- Simple password gate -----------------------------
-# Password is hashed (SHA-256 of "2101") so plaintext isn't in the repo
+# ----------------------------- Password gate -----------------------------
+# SHA-256("2101")
 PASSWORD_HASH = "6cf713e83ca48f8a190b07af39303ea10884872d491f8d0c2056907fc2a26bad"
 
 def check_password():
@@ -22,8 +22,8 @@ def check_password():
         return True
 
     st.markdown("### 🔐 Please enter the access password")
-    pwd = st.text_input("Password", type="password")
-    if pwd is not None and pwd != "":
+    pwd = st.text_input("Password", type="password", key="pwd_input")
+    if pwd:
         h = hashlib.sha256(pwd.encode("utf-8")).hexdigest()
         if h == PASSWORD_HASH:
             st.session_state["authenticated"] = True
@@ -37,20 +37,23 @@ def check_password():
 if not check_password():
     st.stop()
 
-# ----------------------------- App UI -----------------------------
+# ----------------------------- Title -----------------------------
 st.title("🗂️ Majda workdays")
-st.caption("Upload the Excel **or paste a Google Drive/Google Sheets link**, type a name (default: Magda). The app reads the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
+st.caption("Upload the Excel **or paste a Google Drive/Google Sheets link**. The app reads the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
 
 LAST_LINK_FILE = "last_link.txt"
 
-# ----------------------------- Sidebar -----------------------------
+# ----------------------------- Sidebar (single instance) -----------------------------
 with st.sidebar:
     st.header("⚙️ Options")
-    target_name = st.text_input("Name to search", value="Magda").strip()
+    target_name = st.text_input("Name to search", value="Magda", key="target_name").strip()
     st.caption("Case-insensitive, *contains* search (e.g., it matches 'Bára +Magda' or 'Magda till 15').")
 
-uploaded = st.file_uploader("Drop or select the .xlsx file", type=["xlsx"])
-drive_url = st.text_input("…or paste a Google Drive/Sheets URL (optional)", placeholder="https://docs.google.com/spreadsheets/d/<ID>/edit or https://drive.google.com/file/d/<ID>/view")
+# ----------------------------- Inputs (single instance, unique keys) -----------------------------
+uploaded = st.file_uploader("Drop or select the .xlsx file", type=["xlsx"], key="uploader_main")
+drive_url = st.text_input("…or paste a Google Drive/Sheets URL (optional)",
+                          placeholder="https://docs.google.com/spreadsheets/d/<ID>/edit or https://drive.google.com/file/d/<ID>/view",
+                          key="drive_url_input")
 
 # ----------------------------- Helpers -----------------------------
 def _safe_to_datetime(s):
@@ -99,6 +102,7 @@ def _filter_by_week(df, week_start: date):
     m = (df["Date"].dt.date >= week_start) & (df["Date"].dt.date <= week_end)
     return df[m].copy()
 
+# ---- Persist last working link ----
 def _load_last_link():
     try:
         if os.path.exists(LAST_LINK_FILE):
@@ -123,9 +127,7 @@ def _clear_last_link():
     except Exception:
         pass
 
-from urllib.parse import urlparse, parse_qs
-import re
-
+# ---- Robust Drive/Sheets ID parsing ----
 def _parse_drive_or_sheets_id(url: str):
     try:
         u = urlparse(url)
@@ -156,8 +158,6 @@ def _parse_drive_or_sheets_id(url: str):
             return "drive", q["id"][0]
 
     return None, None
-
-import requests, gdown
 
 def _download_from_link(url: str) -> io.BytesIO:
     kind, file_id = _parse_drive_or_sheets_id(url)
@@ -202,7 +202,7 @@ def render_weekly_view(df, focus_week: date | None = None):
         df = _filter_by_week(df, focus_week)
         df["WeekStart"] = df["Date"].dt.date.apply(_week_start)
 
-    for wk, dfw in df.groupby("WeekStart", sort=False):
+    for wk, dfw in df.groupby(df["WeekStart"], sort=False):
         st.markdown("---")
         st.subheader(f"Week of {_human_week_label(wk)}")
         for day, dfd in dfw.groupby(dfw["Date"].dt.date, sort=True):
@@ -216,39 +216,29 @@ def render_weekly_view(df, focus_week: date | None = None):
 </div>
 """, unsafe_allow_html=True)
 
-# ----------------------------- Last link prompt -----------------------------
+# ----------------------------- Last link prompt (once) -----------------------------
 if "last_prompt_decided" not in st.session_state:
     st.session_state["last_prompt_decided"] = False
 if "use_last_link" not in st.session_state:
     st.session_state["use_last_link"] = False
 
-last_link = None
-try:
-    with open("last_link.txt","r",encoding="utf-8") as _f:
-        last_link = _f.read().strip() or None
-except Exception:
-    pass
+last_link = _load_last_link()
 
 if last_link and not st.session_state["last_prompt_decided"]:
     with st.container():
         st.info("Use the last successful link?")
         st.code(last_link, language=None)
         col_ok, col_no = st.columns(2)
-        if col_ok.button("✅ Yes, use it"):
+        if col_ok.button("✅ Yes, use it", key="btn_yes_last"):
             st.session_state["use_last_link"] = True
             st.session_state["last_prompt_decided"] = True
-        if col_no.button("❌ No, I'll paste/upload a new one"):
+        if col_no.button("❌ No, I'll paste/upload a new one", key="btn_no_last"):
             st.session_state["use_last_link"] = False
             st.session_state["last_prompt_decided"] = True
 
 # ----------------------------- Main Flow -----------------------------
-uploaded = st.file_uploader("Drop or select the .xlsx file", type=["xlsx"])
-drive_url = st.text_input("…or paste a Google Drive/Sheets URL (optional)", placeholder="https://docs.google.com/spreadsheets/d/<ID>/edit or https://drive.google.com/file/d/<ID>/view")
-
 source_buffer = None
 source_used_link = None
-
-from datetime import date, timedelta
 
 try:
     if st.session_state["use_last_link"] and last_link:
@@ -264,10 +254,7 @@ try:
 except Exception as e:
     st.error(f"Could not download from the provided URL: {e}")
     if st.session_state["use_last_link"] and last_link:
-        try:
-            os.remove("last_link.txt")
-        except Exception:
-            pass
+        _clear_last_link()
     source_buffer = None
     source_used_link = None
 
@@ -281,8 +268,7 @@ if source_buffer is not None:
         matches = _extract_matches(wide, target_name)
 
         if source_used_link:
-            with open("last_link.txt","w",encoding="utf-8") as _fw:
-                _fw.write(source_used_link)
+            _save_last_link(source_used_link)
 
         if matches.empty:
             st.warning("No matches found in the selected file for that name.")
@@ -291,7 +277,7 @@ if source_buffer is not None:
             months = sorted(matches["YearMonth"].dropna().unique(), reverse=True)
             current_ym = str(pd.Timestamp.today().to_period("M"))
             default_index = months.index(current_ym) if current_ym in months else 0
-            chosen = st.selectbox("Month", options=months, index=default_index, help="Newest first (defaults to current month if available)")
+            chosen = st.selectbox("Month", options=months, index=default_index, help="Newest first (defaults to current month if available)", key="month_select")
 
             view = matches[matches["YearMonth"] == chosen].copy()
             view.drop(columns=["YearMonth"], inplace=True)
@@ -309,11 +295,11 @@ if source_buffer is not None:
                 if "focus_mode" not in st.session_state:
                     st.session_state["focus_mode"] = "all"
 
-                if colA.button("📅 This week"):
+                if colA.button("📅 This week", key="btn_this_week"):
                     st.session_state["focus_mode"] = "this"
-                if colB.button("➡️ Next week"):
+                if colB.button("➡️ Next week", key="btn_next_week"):
                     st.session_state["focus_mode"] = "next"
-                if colC.button("📆 All month"):
+                if colC.button("📆 All month", key="btn_all_month"):
                     st.session_state["focus_mode"] = "all"
 
                 focus_week = None
@@ -332,6 +318,7 @@ if source_buffer is not None:
                     data=buffer.getvalue(),
                     file_name=f"{target_name.lower()}_{chosen}_assignments.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_xlsx"
                 )
     except Exception as e:
         st.error(f"Something went wrong: {e}")

@@ -1,5 +1,4 @@
-# Majda workdays (password fixed)
+# Majda workdays (duplicate widget fix + password)
 
-- Correct SHA-256 hash for password `2101` (gate before app UI).
-- Upload `.xlsx` or paste a **Google Sheets / Google Drive** link.
-- Persists the last successful link across sessions in `last_link.txt`.
+- Fixes StreamlitDuplicateElementId by ensuring only one instance of each widget and unique keys.
+- Keeps password gate (SHA-256 of 2101), Drive/Sheets download, and persistent last link.
