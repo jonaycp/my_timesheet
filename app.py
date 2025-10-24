@@ -1,4 +1,5 @@
 import io
+import os
 import re
 from urllib.parse import urlparse, parse_qs
 import requests
@@ -10,7 +11,9 @@ from datetime import timedelta, date
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
 st.title("🗂️ Majda workdays")
-st.caption("Upload the Excel **or paste a Google Drive/Google Sheets link**, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
+st.caption("Upload the Excel **or paste a Google Drive/Google Sheets link**, type a name (default: Magda). The app reads the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
+
+LAST_LINK_FILE = "last_link.txt"
 
 # ----------------------------- Sidebar -----------------------------
 with st.sidebar:
@@ -70,6 +73,31 @@ def _filter_by_week(df, week_start: date):
     m = (df["Date"].dt.date >= week_start) & (df["Date"].dt.date <= week_end)
     return df[m].copy()
 
+# ---- Persist last working link ----
+def _load_last_link():
+    try:
+        if os.path.exists(LAST_LINK_FILE):
+            with open(LAST_LINK_FILE, "r", encoding="utf-8") as f:
+                url = f.read().strip()
+                return url if url else None
+    except Exception:
+        pass
+    return None
+
+def _save_last_link(url: str):
+    try:
+        with open(LAST_LINK_FILE, "w", encoding="utf-8") as f:
+            f.write(url.strip())
+    except Exception as e:
+        st.warning(f"Could not save last link: {e}")
+
+def _clear_last_link():
+    try:
+        if os.path.exists(LAST_LINK_FILE):
+            os.remove(LAST_LINK_FILE)
+    except Exception:
+        pass
+
 # ---- Robust Drive/Sheets ID parsing ----
 def _parse_drive_or_sheets_id(url: str):
     """Return tuple(kind, file_id) where kind in {'drive','sheets'} or (None, None)."""
@@ -83,7 +111,6 @@ def _parse_drive_or_sheets_id(url: str):
     # Google Sheets: docs.google.com/spreadsheets/d/<ID>/...
     if "docs.google.com" in host and "/spreadsheets/" in path:
         parts = [p for p in path.split("/") if p]
-        # expect ['spreadsheets','d','<id>', ...]
         if "spreadsheets" in parts and "d" in parts:
             try:
                 idx = parts.index("d")
@@ -91,7 +118,6 @@ def _parse_drive_or_sheets_id(url: str):
                 return "sheets", fid
             except Exception:
                 pass
-        # fallback with regex
         m = re.search(r"/spreadsheets/d/([^/]+)/?", path)
         if m:
             return "sheets", m.group(1)
@@ -101,11 +127,9 @@ def _parse_drive_or_sheets_id(url: str):
         m = re.search(r"/file/d/([^/]+)/?", path)
         if m:
             return "drive", m.group(1)
-        # open?id=<ID> or uc?id=<ID>
         q = parse_qs(u.query)
-        for k in ("id",):
-            if k in q and q[k]:
-                return "drive", q[k][0]
+        if "id" in q and q["id"]:
+            return "drive", q["id"][0]
 
     return None, None
 
@@ -169,17 +193,48 @@ def render_weekly_view(df, focus_week: date | None = None):
 </div>
 """, unsafe_allow_html=True)
 
+# ----------------------------- Last link prompt -----------------------------
+if "last_prompt_decided" not in st.session_state:
+    st.session_state["last_prompt_decided"] = False
+if "use_last_link" not in st.session_state:
+    st.session_state["use_last_link"] = False
+
+last_link = _load_last_link()
+
+if last_link and not st.session_state["last_prompt_decided"]:
+    with st.container():
+        st.info("Use the last successful link?")
+        st.code(last_link, language=None)
+        col_ok, col_no = st.columns(2)
+        if col_ok.button("✅ Yes, use it"):
+            st.session_state["use_last_link"] = True
+            st.session_state["last_prompt_decided"] = True
+        if col_no.button("❌ No, I'll paste/upload a new one"):
+            st.session_state["use_last_link"] = False
+            st.session_state["last_prompt_decided"] = True
+
 # ----------------------------- Main Flow -----------------------------
 source_buffer = None
+source_used_link = None  # track which link we used successfully
 
-if uploaded is not None:
-    source_buffer = uploaded
-elif drive_url.strip():
-    try:
-        with st.spinner("Downloading file..."):
+try:
+    if st.session_state["use_last_link"] and last_link:
+        with st.spinner("Downloading last link..."):
+            source_buffer = _download_from_link(last_link)
+        source_used_link = last_link
+    elif uploaded is not None:
+        source_buffer = uploaded
+    elif drive_url.strip():
+        with st.spinner("Downloading provided link..."):
             source_buffer = _download_from_link(drive_url.strip())
-    except Exception as e:
-        st.error(f"Could not download from the provided URL: {e}")
+        source_used_link = drive_url.strip()
+except Exception as e:
+    st.error(f"Could not download from the provided URL: {e}")
+    # If last link failed, clear it to avoid looping on a bad link next time.
+    if st.session_state["use_last_link"] and last_link:
+        _clear_last_link()
+    source_buffer = None
+    source_used_link = None
 
 if source_buffer is not None:
     try:
@@ -190,6 +245,10 @@ if source_buffer is not None:
 
         wide = _fix_headers(raw)
         matches = _extract_matches(wide, target_name)
+
+        # If we got this far using a link, persist it as the last successful one
+        if source_used_link:
+            _save_last_link(source_used_link)
 
         if matches.empty:
             st.warning("No matches found in the selected file for that name.")
@@ -217,15 +276,12 @@ if source_buffer is not None:
                 if "focus_mode" not in st.session_state:
                     st.session_state["focus_mode"] = "all"
 
-                def set_focus(mode):
-                    st.session_state["focus_mode"] = mode
-
                 if colA.button("📅 This week"):
-                    set_focus("this")
+                    st.session_state["focus_mode"] = "this"
                 if colB.button("➡️ Next week"):
-                    set_focus("next")
+                    st.session_state["focus_mode"] = "next"
                 if colC.button("📆 All month"):
-                    set_focus("all")
+                    st.session_state["focus_mode"] = "all"
 
                 focus_week = None
                 if st.session_state["focus_mode"] == "this":
@@ -253,7 +309,7 @@ else:
 st.markdown("""
 ---
 ### Notes
-- Paste **Google Sheets** links like `https://docs.google.com/spreadsheets/d/<ID>/edit` — we will export to **XLSX** automatically.
+- Paste **Google Sheets** links like `https://docs.google.com/spreadsheets/d/<ID>/edit` — the app will export to **XLSX** automatically.
 - Paste **Google Drive** links like `https://drive.google.com/file/d/<ID>/view` — direct download is handled.
-- Make sure sharing is set to **Anyone with the link**.
+- The last successful link is stored in `last_link.txt` (server-side) and offered on next visits.
 """)

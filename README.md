@@ -1,6 +1,5 @@
-# Majda workdays (upload OR Google Drive/Sheets link)
+# Majda workdays (persistent last link)
 
 - Upload `.xlsx` or paste a **Google Sheets / Google Drive** link.
-- Google Sheets links are exported to XLSX automatically (no manual download needed).
-- Reads the **Směny** sheet (fallback: first sheet).
-- Month selector defaults to current month if present; weekly card-style view; quick jump buttons.
+- The **last successful link** is saved in `last_link.txt` (server-side) and offered on next visits, across devices.
+- Reads the **Směny** sheet (fallback: first sheet). Weekly card-style view with quick jump buttons.
