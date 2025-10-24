@@ -12,9 +12,8 @@ import hashlib
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
 # ----------------------------- Simple password gate -----------------------------
-# Password: 2101 (we store only its SHA256 hash here so the plaintext isn't in the repo)
-# NOTE: for stronger security in production use Streamlit Secrets or an auth provider.
-PASSWORD_HASH = "6b3a55e0261b0304143f805a249e2f0a2d3f3a7f3b6d0a5e6f3a5f7d4a1e9c7"  # sha256("2101")
+# Password is hashed (SHA-256 of "2101") so plaintext isn't in the repo
+PASSWORD_HASH = "6cf713e83ca48f8a190b07af39303ea10884872d491f8d0c2056907fc2a26bad"
 
 def check_password():
     if "authenticated" not in st.session_state:
@@ -24,7 +23,7 @@ def check_password():
 
     st.markdown("### 🔐 Please enter the access password")
     pwd = st.text_input("Password", type="password")
-    if pwd:
+    if pwd is not None and pwd != "":
         h = hashlib.sha256(pwd.encode("utf-8")).hexdigest()
         if h == PASSWORD_HASH:
             st.session_state["authenticated"] = True
@@ -58,14 +57,12 @@ def _safe_to_datetime(s):
     return pd.to_datetime(s, errors="coerce")
 
 def _fix_headers(df):
-    # Row 0 = places, Row 1 = shifts
     places = df.iloc[0].ffill(axis=0)
     shifts = df.iloc[1].ffill(axis=0)
     headers = [f"{str(p)} | {str(s)}" for p, s in zip(places, shifts)]
     out = df.copy()
     out.columns = headers
     out = out.drop([0, 1]).reset_index(drop=True)
-    # First two columns are Date and Weekday labels
     out.rename(columns={out.columns[0]: "Date", out.columns[1]: "Weekday"}, inplace=True)
     out["Date"] = _safe_to_datetime(out["Date"])
     return out
@@ -102,7 +99,6 @@ def _filter_by_week(df, week_start: date):
     m = (df["Date"].dt.date >= week_start) & (df["Date"].dt.date <= week_end)
     return df[m].copy()
 
-# ---- Persist last working link ----
 def _load_last_link():
     try:
         if os.path.exists(LAST_LINK_FILE):
@@ -127,7 +123,9 @@ def _clear_last_link():
     except Exception:
         pass
 
-# ---- Robust Drive/Sheets ID parsing ----
+from urllib.parse import urlparse, parse_qs
+import re
+
 def _parse_drive_or_sheets_id(url: str):
     try:
         u = urlparse(url)
@@ -158,6 +156,8 @@ def _parse_drive_or_sheets_id(url: str):
             return "drive", q["id"][0]
 
     return None, None
+
+import requests, gdown
 
 def _download_from_link(url: str) -> io.BytesIO:
     kind, file_id = _parse_drive_or_sheets_id(url)
@@ -222,7 +222,12 @@ if "last_prompt_decided" not in st.session_state:
 if "use_last_link" not in st.session_state:
     st.session_state["use_last_link"] = False
 
-last_link = _load_last_link()
+last_link = None
+try:
+    with open("last_link.txt","r",encoding="utf-8") as _f:
+        last_link = _f.read().strip() or None
+except Exception:
+    pass
 
 if last_link and not st.session_state["last_prompt_decided"]:
     with st.container():
@@ -237,8 +242,13 @@ if last_link and not st.session_state["last_prompt_decided"]:
             st.session_state["last_prompt_decided"] = True
 
 # ----------------------------- Main Flow -----------------------------
+uploaded = st.file_uploader("Drop or select the .xlsx file", type=["xlsx"])
+drive_url = st.text_input("…or paste a Google Drive/Sheets URL (optional)", placeholder="https://docs.google.com/spreadsheets/d/<ID>/edit or https://drive.google.com/file/d/<ID>/view")
+
 source_buffer = None
-source_used_link = None  # track which link we used successfully
+source_used_link = None
+
+from datetime import date, timedelta
 
 try:
     if st.session_state["use_last_link"] and last_link:
@@ -254,7 +264,10 @@ try:
 except Exception as e:
     st.error(f"Could not download from the provided URL: {e}")
     if st.session_state["use_last_link"] and last_link:
-        _clear_last_link()
+        try:
+            os.remove("last_link.txt")
+        except Exception:
+            pass
     source_buffer = None
     source_used_link = None
 
@@ -268,7 +281,8 @@ if source_buffer is not None:
         matches = _extract_matches(wide, target_name)
 
         if source_used_link:
-            _save_last_link(source_used_link)
+            with open("last_link.txt","w",encoding="utf-8") as _fw:
+                _fw.write(source_used_link)
 
         if matches.empty:
             st.warning("No matches found in the selected file for that name.")
@@ -324,11 +338,3 @@ if source_buffer is not None:
         st.exception(e)
 else:
     st.info("Upload an .xlsx file or paste a Google Drive/Sheets link to begin.")
-
-st.markdown("""
----
-### Notes
-- Paste **Google Sheets** links like `https://docs.google.com/spreadsheets/d/<ID>/edit` — the app will export to **XLSX** automatically.
-- Paste **Google Drive** links like `https://drive.google.com/file/d/<ID>/view` — direct download is handled.
-- The last successful link is stored in `last_link.txt` (server-side) and offered on next visits.
-""")
