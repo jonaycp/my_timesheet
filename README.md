@@ -1,5 +1,5 @@
-# Roster Extractor (fix Period -> str)
+# Majda workdays (upload OR Google Drive link)
 
-- Fixes: `'Period' object has no attribute 'astype'` by using `str(period)`.
+- Upload `.xlsx` **or** paste a **Google Drive** link. The app downloads and processes the file.
 - Automatically reads the **Směny** sheet (fallback: first sheet).
-- Month selector defaults to current month if present; days ascending; week jump buttons included.
+- Month selector defaults to current month if present; weekly card-style view; quick jump buttons.

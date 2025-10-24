@@ -1,4 +1,7 @@
 import io
+import re
+import requests
+import gdown
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta, date
@@ -6,7 +9,7 @@ from datetime import datetime, timedelta, date
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
 st.title("🗂️ Majda workdays")
-st.caption("Upload the Excel, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
+st.caption("Upload the Excel **or paste a Google Drive link**, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
 
 # ----------------------------- Sidebar -----------------------------
 with st.sidebar:
@@ -15,6 +18,7 @@ with st.sidebar:
     st.caption("Case-insensitive, *contains* search (e.g., it matches 'Bára +Magda' or 'Magda till 15').")
 
 uploaded = st.file_uploader("Drop or select the .xlsx file", type=["xlsx"])
+drive_url = st.text_input("…or paste a Google Drive URL (optional)", placeholder="https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing")
 
 # ----------------------------- Helpers -----------------------------
 def _safe_to_datetime(s):
@@ -67,6 +71,40 @@ def _filter_by_week(df, week_start: date):
     m = (df["Date"].dt.date >= week_start) & (df["Date"].dt.date <= week_end)
     return df[m].copy()
 
+# ---- Drive helpers ----
+_DRIVE_ID_PATTERNS = [
+    r'drive\\.google\\.com/file/d/([^/]+)/',       # /file/d/<id>/view
+    r'drive\\.google\\.com/open\\?id=([^&]+)',     # open?id=<id>
+    r'drive\\.google\\.com/uc\\?id=([^&]+)',       # uc?id=<id>
+    r'docs\\.google\\.com/spreadsheets/d/([^/]+)/' # spreadsheets (in case someone shares one)
+]
+
+def _extract_drive_id(url: str):
+    for pat in _DRIVE_ID_PATTERNS:
+        m = re.search(pat, url)
+        if m:
+            return m.group(1)
+    return None
+
+def _download_from_drive(url: str) -> io.BytesIO:
+    fileobj = io.BytesIO()
+    file_id = _extract_drive_id(url)
+    if file_id:
+        # Use gdown to handle large-file confirmation tokens if needed
+        direct_url = f"https://drive.google.com/uc?id={file_id}"
+        out_path = gdown.download(url=direct_url, quiet=True)
+        if out_path is None:
+            raise RuntimeError("Failed to download from Google Drive (check permissions or link).")
+        with open(out_path, "rb") as f:
+            fileobj.write(f.read())
+    else:
+        # Fallback: plain GET (works for direct file links)
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        fileobj.write(r.content)
+    fileobj.seek(0)
+    return fileobj
+
 def render_weekly_view(df, focus_week: date | None = None):
     # Prepare week buckets
     df = df.copy()
@@ -111,12 +149,23 @@ def render_weekly_view(df, focus_week: date | None = None):
 """, unsafe_allow_html=True)
 
 # ----------------------------- Main Flow -----------------------------
-if uploaded:
+source_buffer = None
+
+if uploaded is not None:
+    source_buffer = uploaded
+elif drive_url.strip():
+    try:
+        with st.spinner("Downloading file from Drive..."):
+            source_buffer = _download_from_drive(drive_url.strip())
+    except Exception as e:
+        st.error(f"Could not download from the provided URL: {e}")
+
+if source_buffer is not None:
     try:
         # Always load the 'Směny' sheet. If it doesn't exist, fallback to the first sheet.
-        xls = pd.ExcelFile(uploaded)
+        xls = pd.ExcelFile(source_buffer)
         sheet_name = "Směny" if "Směny" in xls.sheet_names else xls.sheet_names[0]
-        raw = pd.read_excel(uploaded, sheet_name=sheet_name, header=None)
+        raw = pd.read_excel(source_buffer, sheet_name=sheet_name, header=None)
 
         wide = _fix_headers(raw)
         matches = _extract_matches(wide, target_name)
@@ -127,7 +176,6 @@ if uploaded:
             # Build available months (descending) and default to CURRENT month if present
             matches["YearMonth"] = matches["Date"].dt.to_period("M").astype(str)
             months = sorted(matches["YearMonth"].dropna().unique(), reverse=True)
-            # FIX: use str() on the Period object instead of .astype(str)
             current_ym = str(pd.Timestamp.today().to_period("M"))
             default_index = months.index(current_ym) if current_ym in months else 0
             chosen = st.selectbox("Month", options=months, index=default_index, help="Newest first (defaults to current month if available)")
@@ -187,10 +235,13 @@ if uploaded:
     except Exception as e:
         st.error(f"Something went wrong: {e}")
         st.exception(e)
+else:
+    st.info("Upload an .xlsx file or paste a Google Drive link to begin.")
 
 st.markdown("""
 ---
 ### Notes
+- You can upload a file **or** paste a **Google Drive link** (make sure the file is shared with 'Anyone with the link').
 - The app automatically reads the **Směny** sheet (fallback to the first sheet if missing).
 - Month list is newest → oldest and **defaults to current month** when available.
 - Default view shows **all month** (ascending by day). Use **This week** or **Next week** to focus on a single week.
