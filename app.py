@@ -1,15 +1,16 @@
 import io
 import re
+from urllib.parse import urlparse, parse_qs
 import requests
 import gdown
 import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta, date
+from datetime import timedelta, date
 
 st.set_page_config(page_title="Roster Extractor", page_icon="🗂️", layout="wide")
 
 st.title("🗂️ Majda workdays")
-st.caption("Upload the Excel **or paste a Google Drive link**, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
+st.caption("Upload the Excel **or paste a Google Drive/Google Sheets link**, type a name (default: Magda). The app will read the **Směny** sheet automatically. Pick a month (defaults to **current month** if available), view the whole month by default, or jump to **This week** / **Next week**.")
 
 # ----------------------------- Sidebar -----------------------------
 with st.sidebar:
@@ -18,7 +19,7 @@ with st.sidebar:
     st.caption("Case-insensitive, *contains* search (e.g., it matches 'Bára +Magda' or 'Magda till 15').")
 
 uploaded = st.file_uploader("Drop or select the .xlsx file", type=["xlsx"])
-drive_url = st.text_input("…or paste a Google Drive URL (optional)", placeholder="https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing")
+drive_url = st.text_input("…or paste a Google Drive/Sheets URL (optional)", placeholder="https://docs.google.com/spreadsheets/d/<ID>/edit or https://drive.google.com/file/d/<ID>/view")
 
 # ----------------------------- Helpers -----------------------------
 def _safe_to_datetime(s):
@@ -44,8 +45,7 @@ def _extract_matches(df, name):
         if "|" not in col:
             continue
         place, shift = [x.strip() for x in col.split("|", 1)]
-        series = df[col]
-        for i, val in enumerate(series):
+        for i, val in enumerate(df[col]):
             if isinstance(val, str) and name_l in val.lower():
                 results.append({
                     "Date": df.loc[i, "Date"],
@@ -57,7 +57,6 @@ def _extract_matches(df, name):
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["Date","Weekday","Place","Shift","CellText"])
 
 def _week_start(d: date):
-    # Monday as start of week
     if pd.isna(d):
         return d
     return d - timedelta(days=d.weekday())
@@ -71,81 +70,94 @@ def _filter_by_week(df, week_start: date):
     m = (df["Date"].dt.date >= week_start) & (df["Date"].dt.date <= week_end)
     return df[m].copy()
 
-# ---- Drive helpers ----
-_DRIVE_ID_PATTERNS = [
-    r'drive\\.google\\.com/file/d/([^/]+)/',       # /file/d/<id>/view
-    r'drive\\.google\\.com/open\\?id=([^&]+)',     # open?id=<id>
-    r'drive\\.google\\.com/uc\\?id=([^&]+)',       # uc?id=<id>
-    r'docs\\.google\\.com/spreadsheets/d/([^/]+)/' # spreadsheets (in case someone shares one)
-]
+# ---- Robust Drive/Sheets ID parsing ----
+def _parse_drive_or_sheets_id(url: str):
+    """Return tuple(kind, file_id) where kind in {'drive','sheets'} or (None, None)."""
+    try:
+        u = urlparse(url)
+    except Exception:
+        return None, None
+    host = u.netloc.lower()
+    path = u.path
 
-def _extract_drive_id(url: str):
-    for pat in _DRIVE_ID_PATTERNS:
-        m = re.search(pat, url)
+    # Google Sheets: docs.google.com/spreadsheets/d/<ID>/...
+    if "docs.google.com" in host and "/spreadsheets/" in path:
+        parts = [p for p in path.split("/") if p]
+        # expect ['spreadsheets','d','<id>', ...]
+        if "spreadsheets" in parts and "d" in parts:
+            try:
+                idx = parts.index("d")
+                fid = parts[idx+1]
+                return "sheets", fid
+            except Exception:
+                pass
+        # fallback with regex
+        m = re.search(r"/spreadsheets/d/([^/]+)/?", path)
         if m:
-            return m.group(1)
-    return None
+            return "sheets", m.group(1)
 
-def _download_from_drive(url: str) -> io.BytesIO:
-    fileobj = io.BytesIO()
-    file_id = _extract_drive_id(url)
+    # Drive file: drive.google.com/file/d/<ID>/...
+    if "drive.google.com" in host:
+        m = re.search(r"/file/d/([^/]+)/?", path)
+        if m:
+            return "drive", m.group(1)
+        # open?id=<ID> or uc?id=<ID>
+        q = parse_qs(u.query)
+        for k in ("id",):
+            if k in q and q[k]:
+                return "drive", q[k][0]
 
-    if "spreadsheets/d/" in url:
-        # Google Sheets → export to XLSX
+    return None, None
+
+def _download_from_link(url: str) -> io.BytesIO:
+    kind, file_id = _parse_drive_or_sheets_id(url)
+    buf = io.BytesIO()
+
+    if kind == "sheets":
+        # Export Google Sheets to XLSX
         export_url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
-        r = requests.get(export_url, timeout=30)
+        r = requests.get(export_url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
-        fileobj.write(r.content)
-    elif file_id:
-        # Normal Drive file (Excel)
+        buf.write(r.content)
+    elif kind == "drive":
+        # Use gdown for Drive files (handles confirmation tokens)
         direct_url = f"https://drive.google.com/uc?id={file_id}"
         out_path = gdown.download(url=direct_url, quiet=True)
         if out_path is None:
-            raise RuntimeError("Failed to download from Google Drive (check permissions or link).")
+            raise RuntimeError("Download failed. Check that the file is shared with 'Anyone with the link'.")
         with open(out_path, "rb") as f:
-            fileobj.write(f.read())
+            buf.write(f.read())
     else:
-        # Fallback: plain GET
-        r = requests.get(url, timeout=30)
+        # As a last resort, try a direct GET
+        r = requests.get(url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
-        fileobj.write(r.content)
+        buf.write(r.content)
 
-    fileobj.seek(0)
-    return fileobj
-
+    buf.seek(0)
+    return buf
 
 def render_weekly_view(df, focus_week: date | None = None):
-    # Prepare week buckets
     df = df.copy()
     df["WeekStart"] = df["Date"].dt.date.apply(_week_start)
-    # Ascending: weeks from earliest to latest; days from earliest to latest
     df.sort_values(["WeekStart", "Date", "Place", "Shift"], ascending=[True, True, True, True], inplace=True)
 
-    # Overview
     total_days = df["Date"].dt.normalize().nunique()
     total_entries = len(df)
     unique_places = df["Place"].nunique()
 
     st.markdown("### Overview")
     c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Distinct work days", int(total_days))
-    with c2:
-        st.metric("Total assignments", int(total_entries))
-    with c3:
-        st.metric("Places this month", int(unique_places))
+    c1.metric("Distinct work days", int(total_days))
+    c2.metric("Total assignments", int(total_entries))
+    c3.metric("Places this month", int(unique_places))
 
-    # If focusing on a single week, filter here (keeps ordering)
     if focus_week is not None:
         df = _filter_by_week(df, focus_week)
         df["WeekStart"] = df["Date"].dt.date.apply(_week_start)
 
-    # Render per week (ascending)
     for wk, dfw in df.groupby("WeekStart", sort=False):
         st.markdown("---")
         st.subheader(f"Week of {_human_week_label(wk)}")
-
-        # Group per calendar day (ascending)
         for day, dfd in dfw.groupby(dfw["Date"].dt.date, sort=True):
             st.markdown(f"##### {pd.to_datetime(day):%A, %b %d}")
             for _, row in dfd.iterrows():
@@ -164,8 +176,8 @@ if uploaded is not None:
     source_buffer = uploaded
 elif drive_url.strip():
     try:
-        with st.spinner("Downloading file from Drive..."):
-            source_buffer = _download_from_drive(drive_url.strip())
+        with st.spinner("Downloading file..."):
+            source_buffer = _download_from_link(drive_url.strip())
     except Exception as e:
         st.error(f"Could not download from the provided URL: {e}")
 
@@ -182,14 +194,13 @@ if source_buffer is not None:
         if matches.empty:
             st.warning("No matches found in the selected file for that name.")
         else:
-            # Build available months (descending) and default to CURRENT month if present
+            # Months descending; default current month if present
             matches["YearMonth"] = matches["Date"].dt.to_period("M").astype(str)
             months = sorted(matches["YearMonth"].dropna().unique(), reverse=True)
             current_ym = str(pd.Timestamp.today().to_period("M"))
             default_index = months.index(current_ym) if current_ym in months else 0
             chosen = st.selectbox("Month", options=months, index=default_index, help="Newest first (defaults to current month if available)")
 
-            # Filter to chosen month and sort ASCENDING by date (day 1 → 31)
             view = matches[matches["YearMonth"] == chosen].copy()
             view.drop(columns=["YearMonth"], inplace=True)
             view.sort_values(["Date", "Place", "Shift"], ascending=[True, True, True], inplace=True)
@@ -197,41 +208,33 @@ if source_buffer is not None:
             if view.empty:
                 st.info("No entries for the selected month.")
             else:
-                # Week jump controls
                 st.markdown("### Quick jump")
                 colA, colB, colC = st.columns(3)
                 today = date.today()
                 this_week_start = today - timedelta(days=today.weekday())
                 next_week_start = this_week_start + timedelta(days=7)
 
-                # Session state for focus
                 if "focus_mode" not in st.session_state:
-                    st.session_state["focus_mode"] = "all"  # 'all' | 'this' | 'next'
+                    st.session_state["focus_mode"] = "all"
 
                 def set_focus(mode):
                     st.session_state["focus_mode"] = mode
 
-                with colA:
-                    if st.button("📅 This week"):
-                        set_focus("this")
-                with colB:
-                    if st.button("➡️ Next week"):
-                        set_focus("next")
-                with colC:
-                    if st.button("📆 All month"):
-                        set_focus("all")
+                if colA.button("📅 This week"):
+                    set_focus("this")
+                if colB.button("➡️ Next week"):
+                    set_focus("next")
+                if colC.button("📆 All month"):
+                    set_focus("all")
 
-                # Determine focus_week based on current selection
                 focus_week = None
                 if st.session_state["focus_mode"] == "this":
                     focus_week = this_week_start
                 elif st.session_state["focus_mode"] == "next":
                     focus_week = next_week_start
 
-                # Render
                 render_weekly_view(view, focus_week=focus_week)
 
-                # Download of this month's assignments (ascending)
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
                     view.to_excel(writer, index=False, sheet_name="Assignments")
@@ -245,13 +248,12 @@ if source_buffer is not None:
         st.error(f"Something went wrong: {e}")
         st.exception(e)
 else:
-    st.info("Upload an .xlsx file or paste a Google Drive link to begin.")
+    st.info("Upload an .xlsx file or paste a Google Drive/Sheets link to begin.")
 
 st.markdown("""
 ---
 ### Notes
-- You can upload a file **or** paste a **Google Drive link** (make sure the file is shared with 'Anyone with the link').
-- The app automatically reads the **Směny** sheet (fallback to the first sheet if missing).
-- Month list is newest → oldest and **defaults to current month** when available.
-- Default view shows **all month** (ascending by day). Use **This week** or **Next week** to focus on a single week.
+- Paste **Google Sheets** links like `https://docs.google.com/spreadsheets/d/<ID>/edit` — we will export to **XLSX** automatically.
+- Paste **Google Drive** links like `https://drive.google.com/file/d/<ID>/view` — direct download is handled.
+- Make sure sharing is set to **Anyone with the link**.
 """)
