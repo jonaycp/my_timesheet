@@ -89,8 +89,15 @@ def _extract_drive_id(url: str):
 def _download_from_drive(url: str) -> io.BytesIO:
     fileobj = io.BytesIO()
     file_id = _extract_drive_id(url)
-    if file_id:
-        # Use gdown to handle large-file confirmation tokens if needed
+
+    if "spreadsheets/d/" in url:
+        # Google Sheets → export to XLSX
+        export_url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+        r = requests.get(export_url, timeout=30)
+        r.raise_for_status()
+        fileobj.write(r.content)
+    elif file_id:
+        # Normal Drive file (Excel)
         direct_url = f"https://drive.google.com/uc?id={file_id}"
         out_path = gdown.download(url=direct_url, quiet=True)
         if out_path is None:
@@ -98,12 +105,14 @@ def _download_from_drive(url: str) -> io.BytesIO:
         with open(out_path, "rb") as f:
             fileobj.write(f.read())
     else:
-        # Fallback: plain GET (works for direct file links)
+        # Fallback: plain GET
         r = requests.get(url, timeout=30)
         r.raise_for_status()
         fileobj.write(r.content)
+
     fileobj.seek(0)
     return fileobj
+
 
 def render_weekly_view(df, focus_week: date | None = None):
     # Prepare week buckets
